@@ -6,7 +6,7 @@ class ActorCritic(nn.Module):
     """
     Actor-Critic network.
     """
-    def __init__(self, obs_dim, action_dim, hidden_dim=128):
+    def __init__(self, obs_dim, action_dim, hidden_dim=64):
         super().__init__()
 
         # shared feature extractor
@@ -41,46 +41,52 @@ class ActorCritic(nn.Module):
 
 class StudentAgent:
     """
-    Predator agent (inference only).
-    Shared model across all instances.
+    Predator agent (inference only) with separate models per adversary.
     """
 
-    _policy = None
+    _policies = {}  # dictionary of agent_id -> ActorCritic model
     _device = torch.device("cpu")
 
     def __init__(self):
         self.obs_dim = 16
         self.action_dim = 5
 
-        # load model once
-        if StudentAgent._policy is None:
-            StudentAgent._policy = ActorCritic(self.obs_dim, self.action_dim).to(self._device)
-            self._load_model()
+        # load models for all adversaries if not already loaded
+        if not StudentAgent._policies:
+            self._load_models()
 
-        self.policy = StudentAgent._policy
-
-    def _load_model(self):
-        model_path = os.path.join(os.path.dirname(__file__), "ppo_predator.pth")
-        if not os.path.exists(model_path):
-            raise FileNotFoundError("ppo_predator.pth not found next to agent.py")
-
-        state_dict = torch.load(model_path, map_location=self._device)
-        StudentAgent._policy.load_state_dict(state_dict)
-        StudentAgent._policy.eval()
-        print("[INFO] PPO model loaded successfully")
+    def _load_models(self):
+        """
+        Load all trained models (one per adversary).
+        Expects files: ppo_predator_adversary_0.pth, _1.pth, _2.pth
+        """
+        for i in range(3):
+            model = ActorCritic(self.obs_dim, self.action_dim).to(self._device)
+            model_path = os.path.join(
+                os.path.dirname(__file__), f"ppo_predator_adversary_{i}.pth"
+            )
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"{model_path} not found")
+            state_dict = torch.load(model_path, map_location=self._device)
+            model.load_state_dict(state_dict)
+            model.eval()
+            StudentAgent._policies[f"adversary_{i}"] = model
+        print("[INFO] All adversary models loaded successfully")
 
     def get_action(self, observation, agent_id):
         """
-        Select an action for the predator agent.
+        Select deterministic action for a given adversary agent_id.
         """
-
         if isinstance(observation, dict):
             observation = observation["observation"]
 
         obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0)
 
-        with torch.no_grad():
-            action_probs, _ = self.policy(obs_tensor)
+        if agent_id not in StudentAgent._policies:
+            raise ValueError(f"Unknown agent_id: {agent_id}")
+        policy = StudentAgent._policies[agent_id]
 
-        # deterministic action
+        with torch.no_grad():
+            action_probs, _ = policy(obs_tensor)
+
         return torch.argmax(action_probs, dim=-1).item()
